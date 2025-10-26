@@ -1,0 +1,702 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>async/await 底层原理 - 状态机实现</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+
+    :root {
+      --primary: #3498db;
+      --primary-dark: #2980b9;
+      --secondary: #2ecc71;
+      --warning: #f39c12;
+      --danger: #e74c3c;
+      --dark: #2c3e50;
+      --light: #ecf0f1;
+      --code-bg: #1e2a3a;
+      --gray: #95a5a6;
+      --card-bg: rgba(255, 255, 255, 0.1);
+    }
+
+    body {
+      background: linear-gradient(135deg, #1f2a48 0%, #2c3e50 100%);
+      color: #ecf0f1;
+      min-height: 100vh;
+      padding: 20px;
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+
+    header {
+      text-align: center;
+      padding: 40px 0 30px;
+      margin-bottom: 30px;
+    }
+
+    h1 {
+      font-size: 2.8rem;
+      margin-bottom: 15px;
+      background: linear-gradient(to right, var(--primary), var(--secondary));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .subtitle {
+      font-size: 1.2rem;
+      max-width: 800px;
+      margin: 0 auto;
+      opacity: 0.9;
+      color: var(--light);
+      line-height: 1.6;
+    }
+
+    .content {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 30px;
+    }
+
+    .card {
+      background: var(--card-bg);
+      backdrop-filter: blur(10px);
+      border-radius: 15px;
+      padding: 30px;
+      box-shadow: 0 15px 25px rgba(0, 0, 0, 0.3);
+      transition: all 0.3s ease;
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+    }
+
+    .card:hover {
+      transform: translateY(-5px);
+      box-shadow: 0 20px 30px rgba(0, 0, 0, 0.4);
+    }
+
+    .card-header {
+      display: flex;
+      align-items: center;
+      margin-bottom: 30px;
+      padding-bottom: 20px;
+      border-bottom: 2px solid rgba(52, 152, 219, 0.3);
+    }
+
+    .card-header i {
+      font-size: 2rem;
+      color: var(--primary);
+      margin-right: 15px;
+      background: rgba(255, 255, 255, 0.1);
+      width: 60px;
+      height: 60px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .card-header h2 {
+      font-size: 1.8rem;
+      color: var(--light);
+    }
+
+    .state-machine {
+      height: 450px;
+      background: rgba(30, 42, 58, 0.7);
+      border-radius: 10px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .state-container {
+      position: relative;
+      height: 100%;
+    }
+
+    .state {
+      position: absolute;
+      width: 100px;
+      height: 100px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      font-weight: bold;
+      transition: all 0.8s cubic-bezier(0.68, -0.55, 0.265, 1.55);
+      box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
+      text-align: center;
+      font-size: 0.9rem;
+    }
+
+    .state.pending {
+      background: var(--warning);
+      top: 20%;
+      left: 10%;
+    }
+
+    .state.resolved {
+      background: var(--secondary);
+      top: 20%;
+      left: 70%;
+    }
+
+    .state.executing {
+      background: var(--primary);
+      top: 60%;
+      left: 40%;
+    }
+
+    .state.suspended {
+      background: var(--gray);
+      top: 60%;
+      left: 70%;
+    }
+
+    .edge {
+      position: absolute;
+      stroke: white;
+      stroke-width: 3;
+      fill: none;
+      stroke-dasharray: 1000;
+      stroke-dashoffset: 1000;
+      animation: dash 2s linear forwards;
+    }
+
+    @keyframes dash {
+      to {
+        stroke-dashoffset: 0;
+      }
+    }
+
+    .arrowhead {
+      fill: white;
+      stroke-width: 2;
+    }
+
+    .code-section {
+      background: var(--code-bg);
+      padding: 20px;
+      border-radius: 10px;
+      overflow: auto;
+      margin-bottom: 20px;
+      font-family: 'Fira Code', monospace;
+      font-size: 1rem;
+      line-height: 1.6;
+      max-height: 250px;
+    }
+
+    .code-keyword {
+      color: #c678dd;
+    }
+
+    .code-variable {
+      color: #e06c75;
+    }
+
+    .code-string {
+      color: #98c379;
+    }
+
+    .code-function {
+      color: #61afef;
+    }
+
+    .code-comment {
+      color: var(--gray);
+    }
+
+    .controls {
+      display: flex;
+      gap: 15px;
+      margin-top: auto;
+    }
+
+    .btn {
+      padding: 12px 25px;
+      background: var(--primary);
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      transition: all 0.3s;
+    }
+
+    .btn:hover {
+      background: var(--primary-dark);
+      transform: translateY(-3px);
+    }
+
+    .btn-success {
+      background: var(--secondary);
+    }
+
+    .btn-warning {
+      background: var(--warning);
+    }
+
+    .execution-context {
+      position: absolute;
+      top: 20px;
+      right: 20px;
+      padding: 15px;
+      background: rgba(0, 0, 0, 0.3);
+      border-radius: 8px;
+      font-size: 1rem;
+    }
+
+    .context-item {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 8px;
+      gap: 15px;
+    }
+
+    .context-value {
+      color: var(--secondary);
+      font-weight: 600;
+    }
+
+    .description {
+      line-height: 1.7;
+      margin-bottom: 20px;
+    }
+
+    .footer {
+      text-align: center;
+      padding: 30px 0;
+      color: var(--gray);
+      margin-top: 50px;
+      border-top: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    @media (max-width: 900px) {
+      .content {
+        grid-template-columns: 1fr;
+      }
+
+      .state-machine {
+        height: 400px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <header>
+      <h1>async/await 底层原理</h1>
+      <p class="subtitle">探索 JavaScript 异步编程核心机制 - 状态机实现原理</p>
+    </header>
+
+    <div class="content">
+      <div class="card">
+        <div class="card-header">
+          <i class="fas fa-code"></i>
+          <h2>async/await 工作流程</h2>
+        </div>
+
+        <div class="state-machine" id="stateMachine">
+          <div class="execution-context">
+            <div class="context-item">
+              <span>当前状态：</span>
+              <span class="context-value" id="currentState">未启动</span>
+            </div>
+            <div class="context-item">
+              <span>步骤：</span>
+              <span class="context-value" id="step">0/0</span>
+            </div>
+            <div class="context-item">
+              <span>返回值：</span>
+              <span class="context-value" id="returnValue">无</span>
+            </div>
+          </div>
+
+          <div class="state-container">
+            <div class="state pending" id="statePending">
+              <i class="fas fa-spinner"></i>
+              <div>Pending</div>
+            </div>
+            <div class="state resolved" id="stateResolved">
+              <i class="fas fa-check"></i>
+              <div>Resolved</div>
+            </div>
+            <div class="state executing" id="stateExecuting">
+              <i class="fas fa-cog"></i>
+              <div>Executing</div>
+            </div>
+            <div class="state suspended" id="stateSuspended">
+              <i class="fas fa-pause"></i>
+              <div>Suspended</div>
+            </div>
+
+            <!-- SVG 连接线 -->
+            <svg height="100%" width="100%" id="connections">
+              <!-- Pending -> Executing -->
+              <path d="M 150,90 C 200,100 200,200 300,200" class="edge" id="edge1" />
+              <path d="M 300,200 L 280,190" class="arrowhead" />
+
+              <!-- Executing -> Suspended -->
+              <path d="M 480,380 C 530,370 530,380 560,380" class="edge" id="edge2" />
+              <path d="M 560,380 L 550,370" class="arrowhead" />
+
+              <!-- Suspended -> Executing -->
+              <path d="M 660,380 C 660,330 650,330 600,250" class="edge" id="edge3" />
+              <path d="M 600,250 L 610,240" class="arrowhead" />
+
+              <!-- Executing -> Resolved -->
+              <path d="M 520,250 C 570,180 660,170 660,130" class="edge" id="edge4" />
+              <path d="M 660,130 L 650,140" class="arrowhead" />
+
+              <!-- Executing -> Suspended (await) -->
+              <path d="M 480,250 C 480,200 500,150 570,120" class="edge" id="edge5" />
+              <path d="M 570,120 L 560,130" class="arrowhead" />
+            </svg>
+          </div>
+        </div>
+
+        <div class="controls">
+          <button class="btn" id="stepBack">
+            <i class="fas fa-step-backward"></i> 上一步
+          </button>
+          <button class="btn btn-success" id="nextStep">
+            <i class="fas fa-step-forward"></i> 下一步
+          </button>
+          <button class="btn btn-warning" id="autoPlay">
+            <i class="fas fa-play"></i> 自动执行
+          </button>
+          <button class="btn" id="reset">
+            <i class="fas fa-redo"></i> 重置
+          </button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <i class="fas fa-file-code"></i>
+          <h2>状态机实现示例</h2>
+        </div>
+
+        <div class="description">
+          <p>async/await 的底层实现基于生成器函数(Generator)和状态机(state machine)。编译器将async函数转换为一个生成器函数，并使用状态机来管理其执行流程。</p>
+          <p>每个<code class="code-keyword">await</code>表达式都会导致函数的执行挂起，此时控制权返回给事件循环，当异步操作完成后恢复执行。</p>
+        </div>
+
+        <div class="code-section">
+          <span class="code-keyword">async function</span> <span class="code-function">fetchUserData</span>() {<br>
+          &nbsp;&nbsp;<span class="code-comment">// 暂停并等待数据响应</span><br>
+          &nbsp;&nbsp;<span class="code-keyword">const</span> <span class="code-variable">response</span> = <span
+            class="code-keyword">await</span> <span class="code-function">fetch</span>(<span
+            class="code-string">'api/user'</span>);<br><br>
+
+          &nbsp;&nbsp;<span class="code-comment">// 暂停并等待数据解析</span><br>
+          &nbsp;&nbsp;<span class="code-keyword">const</span> <span class="code-variable">user</span> = <span
+            class="code-keyword">await</span> <span class="code-variable">response</span>.<span
+            class="code-function">json</span>();<br><br>
+
+          &nbsp;&nbsp;<span class="code-comment">// 暂停并等待用户权限</span><br>
+          &nbsp;&nbsp;<span class="code-keyword">const</span> <span class="code-variable">permissions</span> = <span
+            class="code-keyword">await</span> <span class="code-function">fetchPermissions</span>(<span
+            class="code-variable">user</span>.<span class="code-variable">id</span>);<br><br>
+
+          &nbsp;&nbsp;<span class="code-keyword">return</span> { <span class="code-variable">...user</span>, <span
+            class="code-variable">permissions</span> };<br>
+          }
+        </div>
+
+        <div class="description">
+          <h3>底层状态机结构</h3>
+          <p>Babel等编译器将上述代码转换为类似以下结构的状态机实现：</p>
+
+          <div class="code-section">
+            <span class="code-keyword">function</span> <span class="code-function">fetchUserData</span>() {<br>
+            &nbsp;&nbsp;<span class="code-keyword">return</span> <span
+              class="code-function">_asyncToGenerator</span>(<span class="code-keyword">function</span>* () {<br>
+            &nbsp;&nbsp;&nbsp;&nbsp;<span class="code-comment">// 状态0: 开始执行</span><br>
+            &nbsp;&nbsp;&nbsp;&nbsp;<span class="code-keyword">let</span> <span class="code-variable">response</span>,
+            <span class="code-variable">user</span>, <span class="code-variable">permissions</span>;<br><br>
+
+            &nbsp;&nbsp;&nbsp;&nbsp;<span class="code-comment">// 状态1: 发送网络请求</span><br>
+            &nbsp;&nbsp;&nbsp;&nbsp;<span class="code-variable">response</span> = <span
+              class="code-keyword">yield</span> <span class="code-function">fetch</span>(<span
+              class="code-string">'api/user'</span>);<br>
+            &nbsp;&nbsp;&nbsp;&nbsp;<span class="code-comment">// 状态2: 解析JSON</span><br>
+            &nbsp;&nbsp;&nbsp;&nbsp;<span class="code-variable">user</span> = <span class="code-keyword">yield</span>
+            <span class="code-variable">response</span>.<span class="code-function">json</span>();<br>
+            &nbsp;&nbsp;&nbsp;&nbsp;<span class="code-comment">// 状态3: 获取权限</span><br>
+            &nbsp;&nbsp;&nbsp;&nbsp;<span class="code-variable">permissions</span> = <span
+              class="code-keyword">yield</span> <span class="code-function">fetchPermissions</span>(<span
+              class="code-variable">user</span>.<span class="code-variable">id</span>);<br>
+            &nbsp;&nbsp;&nbsp;&nbsp;<span class="code-comment">// 状态4: 返回值</span><br>
+            &nbsp;&nbsp;&nbsp;&nbsp;<span class="code-keyword">return</span> { <span
+              class="code-variable">...user</span>, <span class="code-variable">permissions</span> };<br>
+            &nbsp;&nbsp;});<br>
+            }
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <i class="fas fa-cogs"></i>
+        <h2>状态机详细工作流程</h2>
+      </div>
+
+      <div class="description">
+        <h3>async/await 核心机制：状态机原理</h3>
+
+        <p>async函数被编译成一个状态机，该状态机通过<code class="code-keyword">Generator</code>和<code
+            class="code-keyword">Promise</code>的协作实现异步流程控制。</p>
+
+        <h4>主要步骤:</h4>
+        <ol>
+          <li><strong>初始化</strong>: async函数被调用时，返回一个Promise并启动生成器</li>
+          <li><strong>状态转换</strong>: 每个await对应一个状态转换点</li>
+          <li><strong>挂起</strong>: 当遇到await表达式时，状态机挂起执行并返回控制权</li>
+          <li><strong>恢复</strong>: 异步操作完成后，状态机恢复执行到下一状态</li>
+          <li><strong>错误处理</strong>: 通过try-catch块处理异步错误</li>
+        </ol>
+
+        <h4>状态机的核心元素:</h4>
+        <ul>
+          <li><code class="code-variable">generator</code>: 生成器函数，管理执行上下文</li>
+          <li><code class="code-variable">state</code>: 当前执行状态（0:初始状态, 1:await1, 2:await2等）</li>
+          <li><code class="code-variable">value</code>: 当前yield返回值</li>
+          <li><code class="code-variable">_next()</code>: 状态机推进函数</li>
+          <li><code class="code-variable">_throw()</code>: 状态机错误处理函数</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="footer">
+      <p>© 2023 JavaScript 异步编程原理探索 | async/await 状态机实现</p>
+    </div>
+  </div>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', function () {
+      // 状态定义
+      const states = {
+        PENDING: 0,
+        EXECUTING: 1,
+        SUSPENDED: 2,
+        RESOLVED: 3
+      };
+
+      // 当前状态
+      let currentState = -1;
+      let autoPlayInterval = null;
+      let step = 0;
+
+      // 状态元素
+      const stateElements = {
+        [states.PENDING]: document.getElementById('statePending'),
+        [states.EXECUTING]: document.getElementById('stateExecuting'),
+        [states.SUSPENDED]: document.getElementById('stateSuspended'),
+        [states.RESOLVED]: document.getElementById('stateResolved')
+      };
+
+      // 连线元素
+      const edgeElements = [
+        document.getElementById('edge1'),
+        document.getElementById('edge2'),
+        document.getElementById('edge3'),
+        document.getElementById('edge4'),
+        document.getElementById('edge5')
+      ];
+
+      // UI元素
+      const currentStateElement = document.getElementById('currentState');
+      const stepElement = document.getElementById('step');
+      const returnValueElement = document.getElementById('returnValue');
+
+      // 控制按钮
+      const nextStepBtn = document.getElementById('nextStep');
+      const stepBackBtn = document.getElementById('stepBack');
+      const autoPlayBtn = document.getElementById('autoPlay');
+      const resetBtn = document.getElementById('reset');
+
+      // 状态到文本的映射
+      const stateTexts = {
+        [states.PENDING]: "待处理",
+        [states.EXECUTING]: "执行中",
+        [states.SUSPENDED]: "已挂起",
+        [states.RESOLVED]: "已完成"
+      };
+
+      // 重置所有状态
+      function resetAll () {
+        clearInterval(autoPlayInterval);
+        autoPlayBtn.innerHTML = '<i class="fas fa-play"></i> 自动执行';
+
+        // 隐藏所有状态
+        Object.values(stateElements).forEach(el => {
+          el.style.opacity = '0.3';
+          el.style.transform = 'scale(0.8)';
+        });
+
+        // 隐藏所有连接
+        edgeElements.forEach(edge => {
+          edge.style.strokeDashoffset = '1000';
+          edge.style.display = 'none';
+        });
+
+        currentState = states.PENDING;
+        step = 0;
+        updateUI();
+        showState(currentState);
+      }
+
+      // 显示状态
+      function showState (state) {
+        const element = stateElements[state];
+        element.style.opacity = '1';
+        element.style.transform = 'scale(1.1)';
+
+        // 根据状态更新文本
+        currentStateElement.textContent = stateTexts[state];
+        stepElement.textContent = `${step}/5`;
+
+        // 更新返回值的显示
+        switch (state) {
+          case states.RESOLVED:
+            returnValueElement.textContent = "{ name: 'John', age: 30 }";
+            break;
+          case states.SUSPENDED:
+            returnValueElement.textContent = "Promise { <pending> }";
+            break;
+          default:
+            returnValueElement.textContent = "无";
+        }
+      }
+
+      // 动画显示连线
+      function showConnection (index) {
+        edgeElements[index].style.display = 'block';
+        edgeElements[index].style.animation = 'dash 1.5s linear forwards';
+      }
+
+      // 更新UI状态显示
+      function updateUI () {
+        // 重置所有状态显示
+        Object.values(stateElements).forEach(el => {
+          el.style.opacity = '0.3';
+          el.style.transform = 'scale(0.8)';
+        });
+
+        // 高亮当前状态
+        if (currentState >= 0) {
+          showState(currentState);
+        }
+      }
+
+      // 下一步
+      function nextStep () {
+        if (step >= 5) return;
+
+        step++;
+
+        // 状态转换逻辑
+        switch (step) {
+          case 1:
+            showConnection(0);
+            currentState = states.EXECUTING;
+            break;
+          case 2:
+            showConnection(1);
+            currentState = states.SUSPENDED;
+            break;
+          case 3:
+            showConnection(2);
+            currentState = states.EXECUTING;
+            break;
+          case 4:
+            showConnection(5);
+            currentState = states.SUSPENDED;
+            break;
+          case 5:
+            showConnection(4);
+            currentState = states.RESOLVED;
+            break;
+        }
+
+        updateUI();
+      }
+
+      // 上一步
+      function stepBack () {
+        if (step <= 0) return;
+
+        edgeElements[step - 1].style.display = 'none';
+        step--;
+
+        // 状态转换逻辑（反向）
+        switch (step) {
+          case 0:
+            currentState = states.PENDING;
+            break;
+          case 1:
+            currentState = states.EXECUTING;
+            break;
+          case 2:
+            currentState = states.SUSPENDED;
+            break;
+          case 3:
+            currentState = states.EXECUTING;
+            break;
+          case 4:
+            currentState = states.SUSPENDED;
+            break;
+        }
+
+        updateUI();
+      }
+
+      // 自动执行
+      function toggleAutoPlay () {
+        if (autoPlayInterval) {
+          clearInterval(autoPlayInterval);
+          autoPlayInterval = null;
+          autoPlayBtn.innerHTML = '<i class="fas fa-play"></i> 自动执行';
+        } else {
+          autoPlayBtn.innerHTML = '<i class="fas fa-pause"></i> 停止';
+          autoPlayInterval = setInterval(() => {
+            if (step < 5) {
+              nextStep();
+            } else {
+              toggleAutoPlay();
+            }
+          }, 1500);
+        }
+      }
+
+      // 初始化
+      resetAll();
+
+      // 添加事件监听
+      nextStepBtn.addEventListener('click', nextStep);
+      stepBackBtn.addEventListener('click', stepBack);
+      autoPlayBtn.addEventListener('click', toggleAutoPlay);
+      resetBtn.addEventListener('click', resetAll);
+    });
+  </script>
+</body>
+
+</html>
