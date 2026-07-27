@@ -1,0 +1,16 @@
+.vscode
+.idea
+.temp
+node_modules
+dist
+coverage
+*.log
+*.tmp
+*.swp
+*.swo
+*.swn
+*.swnb
+*.swp
+*.swpx
+*.swpu
+*.swp~
